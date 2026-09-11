@@ -3,6 +3,11 @@ module Blazer
     before_action :set_query, only: [:show, :edit, :update, :destroy, :refresh]
     before_action :set_data_source, only: [:tables, :docs, :schema, :cancel]
 
+    # Cohort queries return a row per user before aggregation, so the raw mode
+    # is capped tighter than an ordinary query: it exists to show the author
+    # what their statement returns, not to be read in full.
+    COHORT_ROW_LIMIT = 1000
+
     def home
       set_queries(1000)
 
@@ -112,6 +117,12 @@ module Blazer
 
       run_cohort_analysis if @cohort_analysis
 
+      # Stop the rows at the database. Truncating in the view only slices an
+      # array that run_statement has already built, so the whole result set is
+      # in memory by then and large queries take the process down with them.
+      @row_limit = row_limit_for_run
+      @row_limit = nil unless @row_limit && @statement.row_limit_applicable?
+
       query_running = !@run_id.nil?
 
       if query_running
@@ -146,6 +157,9 @@ module Blazer
         async = Blazer.async
 
         options = {user: blazer_user, query: @query, refresh_cache: params[:check], run_id: @run_id, async: async}
+        # One row past the limit, so the view can tell a truncated result from
+        # one that merely reached the limit.
+        options[:row_limit] = @row_limit + 1 if @row_limit
         if async && request.format.symbol != :csv
           Blazer::RunStatementJob.perform_later(@data_source.id, @statement.statement, options.merge(values: @statement.values))
           wait_start = Blazer.monotonic_time
@@ -408,11 +422,32 @@ module Blazer
       cohort_analysis_statement(@statement) unless @show_cohort_rows
     end
 
+    # Rows a run is allowed to produce, or nil to leave the query alone.
+    def row_limit_for_run
+      # CSV is served from the same action, and a download that silently stops
+      # at the limit hands back a file that looks complete. Bounding that path
+      # is a separate problem from bounding what the browser renders.
+      return nil if request.format.symbol == :csv
+
+      # A forecast is computed from the whole result, so a truncated one would
+      # quietly produce a different prediction rather than a shorter table.
+      return nil if params[:forecast]
+
+      if @cohort_analysis
+        # The aggregated statement groups by cohort and bucket, so it is already
+        # small, and an outer LIMIT would cut cohorts out of the table. Only the
+        # raw mode, which skips the aggregation entirely, needs a cap.
+        @show_cohort_rows ? COHORT_ROW_LIMIT : nil
+      else
+        Blazer.row_limit
+      end
+    end
+
     def render_cohort_analysis
       if @show_cohort_rows
         @cohort_analysis = false
 
-        @row_limit = 1000
+        @row_limit = COHORT_ROW_LIMIT
 
         # check results
         unless @cohort_error

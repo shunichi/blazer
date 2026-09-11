@@ -66,6 +66,14 @@ module Blazer
         # optional
       end
 
+      def supports_row_limit?
+        false # optional
+      end
+
+      def row_limit_statement(statement, limit:)
+        # optional
+      end
+
       protected
 
       def settings

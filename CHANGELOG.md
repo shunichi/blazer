@@ -1,3 +1,7 @@
+## Unreleased
+
+- Added `row_limit` setting to bound the rows a query run from the browser can produce
+
 ## 3.5.1 (2026-07-31)
 
 - Fixed delete buttons

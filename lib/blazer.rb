@@ -69,6 +69,7 @@ module Blazer
     attr_accessor :anomaly_checks
     attr_accessor :forecasting
     attr_accessor :async
+    attr_accessor :row_limit
     attr_accessor :images
     attr_accessor :override_csp
     attr_accessor :slack_oauth_token
@@ -81,6 +82,7 @@ module Blazer
   self.anomaly_checks = false
   self.forecasting = false
   self.async = false
+  self.row_limit = 5000
   self.images = false
   self.override_csp = false
 

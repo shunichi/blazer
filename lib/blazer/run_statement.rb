@@ -4,11 +4,17 @@ module Blazer
       query = options[:query]
 
       data_source = statement.data_source
+      # Applied here rather than in the controller so the job path gets it too:
+      # the job rebuilds the statement from text, and handing it SQL that was
+      # already wrapped would put the wrapper into the audit. Checks reach the
+      # adapter through data_source.run_statement instead, so their results stay
+      # whole.
+      statement.apply_row_limit(options[:row_limit]) if options[:row_limit]
       statement.bind
 
       # audit
       if Blazer.audit
-        audit_statement = statement.bind_statement
+        audit_statement = statement.audit_statement
         audit_statement += "\n\n#{statement.bind_values.to_json}" if statement.bind_values.any?
         audit = Blazer::Audit.new(statement: audit_statement)
         audit.query = query

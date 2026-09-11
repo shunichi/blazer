@@ -228,6 +228,21 @@ module Blazer
         connection_model.send(:sanitize_sql_array, params)
       end
 
+      # Dialects that take a trailing LIMIT. SQL Server wants TOP or OFFSET
+      # FETCH instead, so it is left out rather than guessed at.
+      def supports_row_limit?
+        postgresql? || redshift? || mysql? || sqlite?
+      end
+
+      # The newline before the closing paren is required, not cosmetic: a
+      # statement ending in a line comment (`SELECT 1\n-- note`) would otherwise
+      # swallow the paren into the comment and fail to parse.
+      def row_limit_statement(statement, limit:)
+        raise "Row limit not supported" unless supports_row_limit?
+
+        "SELECT * FROM (\n#{statement}\n) AS blazer_row_limit LIMIT #{limit.to_i}"
+      end
+
       def quoting
         ->(value) { connection_model.connection.quote(value) }
       end
