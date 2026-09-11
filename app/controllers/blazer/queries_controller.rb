@@ -424,6 +424,11 @@ module Blazer
 
     # Rows a run is allowed to produce, or nil to leave the query alone.
     def row_limit_for_run
+      # Off unless asked for. Wrapping changes the SQL that reaches the database
+      # and caps what charts are drawn from, so an install that has been fine
+      # without it should not start behaving differently on upgrade.
+      return nil unless Blazer.row_limit
+
       # CSV is served from the same action, and a download that silently stops
       # at the limit hands back a file that looks complete. Bounding that path
       # is a separate problem from bounding what the browser renders.
@@ -436,7 +441,9 @@ module Blazer
       if @cohort_analysis
         # The aggregated statement groups by cohort and bucket, so it is already
         # small, and an outer LIMIT would cut cohorts out of the table. Only the
-        # raw mode, which skips the aggregation entirely, needs a cap.
+        # raw mode, which skips the aggregation entirely, needs a cap, and it
+        # keeps its own: the view has always shown COHORT_ROW_LIMIT rows there,
+        # so fetching Blazer.row_limit of them would only be waste.
         @show_cohort_rows ? COHORT_ROW_LIMIT : nil
       else
         Blazer.row_limit

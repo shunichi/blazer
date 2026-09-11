@@ -1012,17 +1012,18 @@ async: true
 config.cache_store = :mem_cache_store
 ```
 
-Queries run from the browser stop at 5,000 rows so a query that returns far more
-does not have to fit in memory. Change it with:
+A query that returns far more rows than anyone will read still has to fit in
+memory before any of it is rendered. To stop them at the database instead, add
+to your config:
 
 ```yml
 row_limit: 5000
 ```
 
-Set it to `null` to turn it off. The limit is applied by wrapping the statement,
-so it only covers statements Blazer can wrap safely: a single `SELECT` or `WITH`
-on Postgres, MySQL, or SQLite. CSV downloads are not limited, and neither are
-checks.
+Off by default. The limit is applied by wrapping the statement, so it only
+covers statements Blazer can wrap safely: a single `SELECT` or `WITH` on
+Postgres, MySQL, or SQLite. CSV downloads, forecasts, and checks are not
+limited.
 
 ## Archiving
 

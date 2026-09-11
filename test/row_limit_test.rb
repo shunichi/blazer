@@ -136,6 +136,13 @@ class RowLimitTest < ActionDispatch::IntegrationTest
     assert_match "20 rows", response.body
   end
 
+  def test_off_by_default
+    executed = capture_statements { run_query ROWS }
+    assert_nil Blazer.row_limit
+    assert_empty executed.select { |s| s.include?("blazer_row_limit") }
+    assert_match "20 rows", response.body
+  end
+
   def test_disabled
     executed = capture_statements do
       with_option(:row_limit, nil) { run_query ROWS }
@@ -211,9 +218,18 @@ class RowLimitTest < ActionDispatch::IntegrationTest
 
   def test_cohort_rows_limited
     executed = capture_statements do
-      run_query "SELECT 1 AS user_id, NOW() AS conversion_time /* cohort analysis */"
+      with_option(:row_limit, 5) do
+        run_query "SELECT 1 AS user_id, NOW() AS conversion_time /* cohort analysis */"
+      end
     end
     assert_match(/LIMIT 1001\z/, executed.find { |s| s.include?("blazer_row_limit") })
+  end
+
+  def test_cohort_rows_not_limited_by_default
+    executed = capture_statements do
+      run_query "SELECT 1 AS user_id, NOW() AS conversion_time /* cohort analysis */"
+    end
+    assert_empty executed.select { |s| s.include?("blazer_row_limit") }
   end
 
   private

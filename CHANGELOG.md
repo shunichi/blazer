@@ -1,6 +1,6 @@
 ## Unreleased
 
-- Added `row_limit` setting to bound the rows a query run from the browser can produce
+- Added `row_limit` setting to bound the rows a query run from the browser can produce (off by default)
 
 ## 3.5.1 (2026-07-31)
 

@@ -82,7 +82,7 @@ module Blazer
   self.anomaly_checks = false
   self.forecasting = false
   self.async = false
-  self.row_limit = 5000
+  self.row_limit = nil
   self.images = false
   self.override_csp = false
 
