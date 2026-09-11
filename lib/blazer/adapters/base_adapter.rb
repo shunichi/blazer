@@ -11,6 +11,16 @@ module Blazer
         # required
       end
 
+      def supports_streaming?
+        false # optional
+      end
+
+      # required when supports_streaming? is true
+      # yields [columns, rows] per batch and returns the error message, or nil
+      def run_statement_streaming(statement, comment, bind_params = [], batch_size: nil, &block)
+        raise Blazer::Error, "Streaming not supported"
+      end
+
       def quoting
         # required, how to quote variables
         # :backslash_escape - single quote strings and convert ' to \' and \ to \\

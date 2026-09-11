@@ -1,5 +1,7 @@
 module Blazer
   class QueriesController < BaseController
+    CSV_CONTENT_TYPE = "text/csv; charset=utf-8"
+
     before_action :set_query, only: [:show, :edit, :update, :destroy, :refresh]
     before_action :set_data_source, only: [:tables, :docs, :schema, :cancel]
 
@@ -146,6 +148,12 @@ module Blazer
         async = Blazer.async
 
         options = {user: blazer_user, query: @query, refresh_cache: params[:check], run_id: @run_id, async: async}
+
+        if stream_csv?
+          send_csv_stream(options)
+          return
+        end
+
         if async && request.format.symbol != :csv
           Blazer::RunStatementJob.perform_later(@data_source.id, @statement.statement, options.merge(values: @statement.values))
           wait_start = Blazer.monotonic_time
@@ -284,8 +292,7 @@ module Blazer
           raise Error, @error if @error && Rails.env.test?
 
           data = csv_data(@columns, @rows, @data_source)
-          filename = "#{@query.try(:name).try(:parameterize).presence || 'query'}.csv"
-          send_data data, type: "text/csv; charset=utf-8", disposition: "attachment", filename: filename
+          send_data data, type: CSV_CONTENT_TYPE, disposition: "attachment", filename: csv_filename
         end
       end
     end
@@ -385,7 +392,77 @@ module Blazer
       CSV.generate do |csv|
         csv << columns
         rows.each do |row|
-          csv << row.each_with_index.map { |v, i| v.is_a?(Time) ? blazer_time_value(data_source, columns[i], v) : v }
+          csv << csv_row(columns, row, data_source)
+        end
+      end
+    end
+
+    def csv_row(columns, row, data_source)
+      row.each_with_index.map { |v, i| v.is_a?(Time) ? blazer_time_value(data_source, columns[i], v) : v }
+    end
+
+    def csv_filename
+      "#{@query.try(:name).try(:parameterize).presence || 'query'}.csv"
+    end
+
+    def stream_csv?
+      Blazer.streaming_csv &&
+        request.format.symbol == :csv &&
+        # render_cohort_analysis pivots the rows before they reach the CSV, so
+        # those need the whole result in memory
+        !@cohort_analysis &&
+        @data_source.supports_streaming?
+    end
+
+    # Builds the CSV in a temp file and hands that back as the response body, so
+    # neither the rows nor the CSV are ever fully in memory. Buffering to disk
+    # rather than writing to the socket also keeps the headers unsent until the
+    # query is done, which is what lets a failure render a normal error.
+    def send_csv_stream(options)
+      tempfile = Tempfile.new(["blazer", ".csv"], binmode: true)
+
+      error =
+        begin
+          write_csv_stream(tempfile, options)
+        rescue
+          # nothing owns the file until it becomes the response body
+          tempfile.close!
+          raise
+        end
+
+      if error
+        tempfile.close!
+        # not ideal, but useful for testing
+        raise Error, error if Rails.env.test?
+
+        # a half written file must never pass for a complete download, so throw
+        # away what the cursor produced and answer exactly like the
+        # non-streaming path answers a failed query
+        send_data csv_data([], [], @data_source), type: CSV_CONTENT_TYPE, disposition: "attachment", filename: csv_filename
+      else
+        tempfile.flush
+        response.headers["Content-Length"] = tempfile.size.to_s
+        # Rack 2's ETag middleware digests any body it cannot serve by path,
+        # which would pull the whole CSV back into memory; an entity tag of our
+        # own makes it skip the response. A fresh one every time, since the
+        # query is re-run on every download.
+        response.headers["ETag"] = %(W/"#{SecureRandom.hex(16)}")
+        response.headers["Content-Disposition"] = ActionDispatch::Http::ContentDisposition.format(disposition: "attachment", filename: csv_filename)
+        response.content_type = CSV_CONTENT_TYPE
+        self.response_body = Blazer::TempfileBody.new(tempfile)
+      end
+    end
+
+    def write_csv_stream(tempfile, options)
+      csv = CSV.new(tempfile)
+      header_written = false
+      Blazer::RunStatement.new.perform_streaming(@statement, options) do |columns, rows|
+        unless header_written
+          csv << columns
+          header_written = true
+        end
+        rows.each do |row|
+          csv << csv_row(columns, row, @data_source)
         end
       end
     end

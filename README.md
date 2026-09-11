@@ -305,6 +305,21 @@ cache:
 
 Of course, you can force a refresh at any time.
 
+### CSV Downloads
+
+With PostgreSQL, CSV downloads stream through a server-side cursor, so memory use
+stays proportional to a batch of rows rather than to the size of the result. The
+CSV is byte-for-byte what the non-streaming path produces. Other data sources, and
+queries with cohort analysis, build the CSV in memory as before.
+
+Streaming skips the result cache in both directions, since caching a result means
+holding every row at once, and it leaves the query's checks alone, since a check
+needs the whole result to decide its state. To download CSVs the old way instead:
+
+```yml
+streaming_csv: false
+```
+
 ## Charts
 
 Blazer will automatically generate charts based on the types of the columns returned in your query.

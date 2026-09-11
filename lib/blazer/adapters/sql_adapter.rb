@@ -1,6 +1,16 @@
 module Blazer
   module Adapters
     class SqlAdapter < BaseAdapter
+      # rows pulled from the cursor per round trip
+      STREAM_BATCH_SIZE = 1000
+
+      # cursors are scoped to the transaction that declared them, so this cannot
+      # collide with another session
+      STREAM_CURSOR_NAME = "blazer_stream_cursor"
+
+      # lines the DECLARE puts ahead of the statement it wraps
+      DECLARE_LINE_OFFSET = 1
+
       attr_reader :connection_model
 
       def initialize(data_source)
@@ -44,30 +54,84 @@ module Blazer
           end
 
           # cast values
-          if types.any?
-            rows =
-              rows.map do |row|
-                row.map.with_index do |v, i|
-                  v && (t = types[i]) ? t.send(:cast_value, v) : v
-                end
-              end
-          end
+          rows = cast_rows(rows, types)
 
           # fix for non-ASCII column names and charts
           if adapter_name == "Trilogy"
             columns = columns.map { |k| k.dup.force_encoding(Encoding::UTF_8) }
           end
         rescue => e
-          error = e.message.sub(/.+ERROR: /, "")
-          error = Blazer::TIMEOUT_MESSAGE if Blazer::TIMEOUT_ERRORS.any? { |e| error.include?(e) }
-          error = Blazer::VARIABLE_MESSAGE if error.include?("syntax error at or near \"$") || error.include?("Incorrect syntax near '@") || error.include?("your MySQL server version for the right syntax to use near '?")
-          if error.include?("could not determine data type of parameter")
-            error += " - try adding casting to variables and make sure none are inside a string literal"
-          end
-          reconnect if error.include?("PG::ConnectionBad")
+          error = statement_error(e)
         end
 
         [columns, rows, error]
+      end
+
+      def supports_streaming?
+        # a cursor is only visible inside the transaction that declared it
+        postgresql? && use_transaction?
+      end
+
+      # Runs the statement behind a server-side cursor, yielding [columns, rows]
+      # once per batch so that peak memory is O(batch size) instead of O(result
+      # size). Returns the error message, or nil when the query succeeded.
+      #
+      # Why a cursor and not COPY TO STDOUT or PG::Connection#set_single_row_mode:
+      # FETCH goes back through select_all, so each batch arrives as an
+      # ActiveRecord::Result carrying column_types and is cast exactly the way
+      # run_statement casts a whole result. COPY hands back Postgres' own text
+      # format, which renders times differently, and set_single_row_mode needs
+      # libpq 17. Producing byte-identical output is the point here.
+      def run_statement_streaming(statement, comment, bind_params = [], batch_size: STREAM_BATCH_SIZE)
+        raise Blazer::Error, "Streaming not supported" unless supports_streaming?
+
+        batch_size = batch_size.to_i
+        error = nil
+        # an exception raised by the consumer is not a query error: turning a
+        # failed write into an empty result would hand back a CSV that looks
+        # complete
+        in_consumer = false
+
+        begin
+          in_transaction do |connection|
+            # every FETCH is the same SQL but a different batch of rows, so the
+            # query cache would answer the second one with the first one's rows
+            # and the cursor would never reach its end
+            connection.uncached do
+              set_timeout(data_source.timeout) if data_source.timeout
+
+              binds = bind_params.map { |v| ActiveRecord::Relation::QueryAttribute.new(nil, v, ActiveRecord::Type::Value.new) }
+              # the comment trails the statement exactly as it does in
+              # run_statement, so a query error quotes the same line of SQL
+              # either way
+              connection.select_all("DECLARE #{STREAM_CURSOR_NAME} NO SCROLL CURSOR FOR\n#{cursor_body(statement)} /*#{comment}*/", nil, binds)
+
+              # statement_timeout bounds a single FETCH, not the download as a
+              # whole, so keep the wall clock limit that running one statement
+              # used to give us
+              deadline = data_source.timeout ? Blazer.monotonic_time + data_source.timeout.to_f : nil
+
+              types = nil
+              loop do
+                result = connection.select_all("FETCH FORWARD #{batch_size} FROM #{STREAM_CURSOR_NAME} /*#{comment}*/")
+                types ||= result.column_types.any? ? result.columns.size.times.map { |i| result.column_types[i] } : []
+                rows = cast_rows(result.rows, types)
+
+                in_consumer = true
+                yield result.columns, rows
+                in_consumer = false
+
+                break if rows.size < batch_size
+                raise Blazer::Error, Blazer::TIMEOUT_MESSAGE if deadline && Blazer.monotonic_time > deadline
+              end
+            end
+          end
+        rescue => e
+          raise if in_consumer
+          error = statement_error(e, line_offset: DECLARE_LINE_OFFSET)
+        end
+
+        error
       end
 
       def tables
@@ -253,6 +317,56 @@ module Blazer
       end
 
       protected
+
+      def cast_rows(rows, types)
+        return rows unless types.any?
+
+        rows.map do |row|
+          row.map.with_index do |v, i|
+            v && (t = types[i]) ? t.send(:cast_value, v) : v
+          end
+        end
+      end
+
+      # Postgres reports positions against the SQL it was handed, so a statement
+      # embedded in a DECLARE comes back with line numbers pointing past the end
+      # of the query the user wrote. line_offset shifts them back.
+      def statement_error(e, line_offset: 0)
+        error = e.message.sub(/.+ERROR: /, "")
+        error = shift_error_lines(error, line_offset) if line_offset > 0
+        error = Blazer::TIMEOUT_MESSAGE if Blazer::TIMEOUT_ERRORS.any? { |te| error.include?(te) }
+        error = Blazer::VARIABLE_MESSAGE if error.include?("syntax error at or near \"$") || error.include?("Incorrect syntax near '@") || error.include?("your MySQL server version for the right syntax to use near '?")
+        if error.include?("could not determine data type of parameter")
+          error += " - try adding casting to variables and make sure none are inside a string literal"
+        end
+        reconnect if error.include?("PG::ConnectionBad")
+        error
+      end
+
+      # The caret is indented to clear the "LINE n: " prefix, so it has to move
+      # with the width of the number.
+      def shift_error_lines(error, offset)
+        error.gsub(/^LINE (\d+): (.*)(?:\n( *)\^)?/) do |match|
+          old_prefix = "LINE #{$1}: "
+          number = $1.to_i - offset
+          text = $2
+          caret = $3
+
+          if number < 1
+            match
+          else
+            prefix = "LINE #{number}: "
+            shifted = caret ? "\n#{" " * (caret.size + prefix.size - old_prefix.size)}^" : ""
+            "#{prefix}#{text}#{shifted}"
+          end
+        end
+      end
+
+      # DECLARE ... CURSOR FOR takes a single query, so a trailing semicolon
+      # would end the DECLARE before the query is read
+      def cursor_body(statement)
+        statement.sub(/;\s*\z/, "")
+      end
 
       def select_all(statement, params = [])
         statement = connection_model.send(:sanitize_sql_array, [statement] + params) if params.any?

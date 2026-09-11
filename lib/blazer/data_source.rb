@@ -4,7 +4,7 @@ module Blazer
 
     attr_reader :id, :settings
 
-    def_delegators :adapter_instance, :schema, :tables, :preview_statement, :reconnect, :cost, :explain, :cancel, :supports_cohort_analysis?, :cohort_analysis_statement
+    def_delegators :adapter_instance, :schema, :tables, :preview_statement, :reconnect, :cost, :explain, :cancel, :supports_cohort_analysis?, :cohort_analysis_statement, :supports_streaming?
 
     def initialize(id, settings)
       @id = id
@@ -107,24 +107,7 @@ module Blazer
       end
 
       unless result
-        comment = "blazer".dup
-        if options[:user].respond_to?(:id)
-          comment << ",user_id:#{options[:user].id}"
-        end
-        if options[:user].respond_to?(Blazer.user_name)
-          # only include letters, numbers, and spaces to prevent injection
-          comment << ",user_name:#{options[:user].send(Blazer.user_name).to_s.gsub(/[^a-zA-Z0-9 ]/, "")}"
-        end
-        if options[:query].respond_to?(:id)
-          comment << ",query_id:#{options[:query].id}"
-        end
-        if options[:check]
-          comment << ",check_id:#{options[:check].id},check_emails:#{options[:check].emails}"
-        end
-        if options[:run_id]
-          comment << ",run_id:#{options[:run_id]}"
-        end
-        result = run_statement_helper(statement, comment, options)
+        result = run_statement_helper(statement, statement_comment(options), options)
       end
 
       if options[:async] && options[:run_id]
@@ -138,6 +121,24 @@ module Blazer
       end
 
       result
+    end
+
+    # Streams the result in batches, yielding [columns, rows] for each. Returns
+    # the error message, or nil when the query succeeded.
+    #
+    # Skips the result cache in both directions on purpose: reading or writing a
+    # cache entry means holding every row at once, which is the cost streaming
+    # exists to avoid.
+    def run_statement_streaming(statement, options = {}, &block)
+      statement = Statement.new(statement, self) if statement.is_a?(String)
+      statement.bind unless statement.bind_statement
+
+      comment = statement_comment(options)
+      if adapter_instance.parameter_binding
+        adapter_instance.run_statement_streaming(statement.bind_statement, comment, statement.bind_values, &block)
+      else
+        adapter_instance.run_statement_streaming(statement.bind_statement, comment, &block)
+      end
     end
 
     def clear_cache(statement)
@@ -200,6 +201,27 @@ module Blazer
     end
 
     protected
+
+    def statement_comment(options)
+      comment = "blazer".dup
+      if options[:user].respond_to?(:id)
+        comment << ",user_id:#{options[:user].id}"
+      end
+      if options[:user].respond_to?(Blazer.user_name)
+        # only include letters, numbers, and spaces to prevent injection
+        comment << ",user_name:#{options[:user].send(Blazer.user_name).to_s.gsub(/[^a-zA-Z0-9 ]/, "")}"
+      end
+      if options[:query].respond_to?(:id)
+        comment << ",query_id:#{options[:query].id}"
+      end
+      if options[:check]
+        comment << ",check_id:#{options[:check].id},check_emails:#{options[:check].emails}"
+      end
+      if options[:run_id]
+        comment << ",run_id:#{options[:run_id]}"
+      end
+      comment
+    end
 
     def adapter_instance
       @adapter_instance ||= begin

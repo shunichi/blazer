@@ -1,3 +1,8 @@
+## Unreleased
+
+- Stream CSV downloads through a server-side cursor with Postgres, so memory use no longer scales with the size of the result
+- Added `streaming_csv` setting to turn streaming CSV downloads off
+
 ## 3.5.1 (2026-07-31)
 
 - Fixed delete buttons
