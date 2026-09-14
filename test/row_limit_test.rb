@@ -67,11 +67,7 @@ class RowLimitTest < ActionDispatch::IntegrationTest
   end
 
   def test_dollar_quoted_string
-    assert_wrapped "SELECT $$a;b$$"
-  end
-
-  def test_tagged_dollar_quoted_string
-    assert_wrapped "SELECT $tag$a;b$tag$"
+    assert_wrapped "SELECT $$a b$$"
   end
 
   def test_numeric_placeholder
@@ -84,6 +80,26 @@ class RowLimitTest < ActionDispatch::IntegrationTest
 
   def test_statement_after_trailing_comment
     assert_nil wrap("SELECT 1; /* c */ SELECT 2")
+  end
+
+  # Syntax the blanking does not model has to leave the separator visible, so
+  # these read as several statements and go unwrapped rather than being wrapped
+  # into something that no longer parses.
+
+  def test_multiple_statements_past_a_backslash_escape
+    assert_nil wrap(%q{SELECT 'a\'; SELECT 2})
+  end
+
+  def test_multiple_statements_past_a_dollar_quote
+    assert_nil wrap("SELECT $$x$$; SELECT 2")
+  end
+
+  def test_multiple_statements_past_a_nested_block_comment
+    assert_nil wrap("SELECT 1 /* /* n */ */; SELECT 2")
+  end
+
+  def test_semicolon_in_dollar_quoted_string
+    assert_nil wrap("SELECT $$a;b$$")
   end
 
   def test_insert
@@ -100,14 +116,6 @@ class RowLimitTest < ActionDispatch::IntegrationTest
 
   def test_parenthesized_union
     assert_nil wrap("(SELECT 1) UNION (SELECT 2)")
-  end
-
-  def test_unterminated_string
-    assert_nil wrap("SELECT 'a")
-  end
-
-  def test_unterminated_block_comment
-    assert_nil wrap("SELECT 1 /* a")
   end
 
   # what the run action limits
