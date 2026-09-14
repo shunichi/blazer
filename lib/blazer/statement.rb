@@ -127,10 +127,12 @@ module Blazer
     # The statement with a trailing semicolon removed, or nil when wrapping it
     # in an outer SELECT would not be safe.
     #
-    # Only a single statement starting with SELECT or WITH can be wrapped:
-    # anything else either changes meaning under a wrapper (INSERT, EXPLAIN) or
-    # stops parsing. Several statements have to be ruled out because Blazer runs
-    # them today, returning the last result.
+    # Only a single statement starting with SELECT or WITH can be wrapped.
+    # Blazer does not reject writes — nothing inspects the statement, and the
+    # transaction around a query is what undoes them — so an INSERT reaching
+    # here is a statement that works today, and an INSERT or an EXPLAIN inside
+    # FROM is a syntax error. Several statements are ruled out for the same
+    # reason: Blazer runs those too, returning the last result.
     #
     # Blanking is deliberately approximate. Syntax it does not model — nested
     # block comments, backslash escapes, dollar quotes — leaves the semicolon
